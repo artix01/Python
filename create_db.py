@@ -33,6 +33,7 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS customers (
                     email TEXT,
                     address TEXT,
                     payment_method TEXT
+                    registration_step TEXT
                 )''')
 
 # Создание таблицы заказов

@@ -15,7 +15,7 @@ history_file_path = 'history.json'
 # Инициализация бота
 with open(config_file_path, 'r') as config_file:
     config = json.load(config_file)
-bot = telebot.TeleBot(config["token"])
+bot = telebot.TeleBot(config["tg_token"])
 
 # Подключение к базе данных SQLite
 conn = sqlite3.connect('bot_database.db', check_same_thread=False)
@@ -33,6 +33,9 @@ main_menu.add(types.KeyboardButton("Оценить блюдо"))
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
 def handle_start(message):
+    register_user(message)
+
+def register_user(message):
     user_id = message.from_user.id
     username = message.from_user.username
     address = ''
@@ -47,9 +50,88 @@ def handle_start(message):
             # Если пользователя нет в базе данных, добавляем его
             cursor.execute("INSERT INTO users (user_id, username, address, basket) VALUES (?, ?, ?, ?)",
                            (user_id, username, address, basket))
+            conn.commit()
 
-    # Отправляем приветственное сообщение
-    bot.send_message(user_id, "Привет! Я бот для заказа еды из ресторана. Как я могу помочь?", reply_markup=main_menu)
+            # Запрос информации у пользователя
+            bot.send_message(user_id, "Привет! Давайте соберем некоторую информацию для регистрации.")
+            bot.send_message(user_id, "Как вас зовут?")
+            bot.register_next_step_handler(message, lambda msg: process_step(msg, 'name'))
+        else:
+            # Проверка наличия всех данных в таблице customers
+            cursor.execute("SELECT * FROM customers WHERE user_id=?", (user_id,))
+            customer_data = cursor.fetchone()
+
+            if not customer_data or any(
+                    item is None for item in customer_data[1:]):  # Проверяем, есть ли хоть одно пустое поле
+                # Если хотя бы одно поле не заполнено, продолжаем регистрацию
+                bot.send_message(user_id, "Привет! Давайте продолжим регистрацию.")
+                bot.send_message(user_id, "Как вас зовут?")
+                bot.register_next_step_handler(message, lambda msg: process_step(msg, 'name'))
+            else:
+                # Если все поля заполнены, считаем регистрацию завершенной
+                bot.send_message(user_id, "Привет! Как я могу помочь?", reply_markup=main_menu)
+
+def process_step(message, step):
+    user_id = message.from_user.id
+
+    with conn:
+        cursor.execute("SELECT * FROM customers WHERE user_id=?", (user_id,))
+        existing_customer = cursor.fetchone()
+
+    if not existing_customer or any(item is None for item in existing_customer[1:]):  # Проверяем, есть ли хоть одно пустое поле
+        # Новый пользователь или не все данные заполнены, добавляем/обновляем в базе данных
+        if step == 'name':
+            # Обрабатываем шаг с именем
+            name = message.text
+            with conn:
+                cursor.execute("INSERT INTO customers (user_id, name) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET name = ?",
+                               (user_id, name, name))
+            conn.commit()
+
+            # Переходим ко второму шагу
+            bot.send_message(user_id, "Отлично, теперь укажите свой email:")
+            bot.register_next_step_handler(message, lambda msg: process_step(msg, 'email'))
+
+        elif step == 'email':
+            # Обрабатываем шаг с email
+            email = message.text
+            with conn:
+                cursor.execute("UPDATE customers SET email = ? WHERE user_id = ?", (email, user_id))
+            conn.commit()
+
+            # Переходим к следующему шагу
+            bot.send_message(user_id, "Спасибо! Теперь укажите свой адрес:")
+            bot.register_next_step_handler(message, lambda msg: process_step(msg, 'address'))
+
+        elif step == 'address':
+            # Обрабатываем шаг с адресом
+            address = message.text
+            with conn:
+                cursor.execute("UPDATE customers SET address = ? WHERE user_id = ?", (address, user_id))
+            conn.commit()
+
+            # Переходим к следующему шагу
+            bot.send_message(user_id, "Отлично! Теперь выберите метод оплаты:", reply_markup=payment_method_keyboard())
+            bot.register_next_step_handler(message, lambda msg: process_step(msg, 'payment_method'))
+
+        elif step == 'payment_method':
+            # Обрабатываем шаг с выбором метода оплаты
+            payment_method = message.text
+            with conn:
+                cursor.execute("UPDATE customers SET payment_method = ? WHERE user_id = ?", (payment_method, user_id))
+            conn.commit()
+
+            # Регистрация завершена, отправляем приветственное сообщение
+            bot.send_message(user_id, "Спасибо за регистрацию! Теперь вы можете начать пользоваться ботом.", reply_markup=main_menu)
+    else:
+        # Пользователь уже зарегистрирован и все данные заполнены, отправляем приветственное сообщение
+        bot.send_message(user_id, "Привет! Как я могу помочь?", reply_markup=main_menu)
+
+def payment_method_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(types.KeyboardButton("Карта"))
+    keyboard.add(types.KeyboardButton("Наличные"))
+    return keyboard
 
 # Обработчик команды "Меню"
 @bot.message_handler(func=lambda message: message.text == "Меню")
@@ -253,36 +335,303 @@ def handle_checkout(message):
         # Проверяем, есть ли позиции в корзине
         cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
         basket = cursor.fetchone()
-
         if basket and basket[0]:
-            # Если корзина не пуста, показываем кнопку "Оформить заказ"
-            bot.send_message(user_id, "Вы можете оформить заказ", reply_markup=types.ReplyKeyboardMarkup(
-                keyboard=[types.KeyboardButton("Оформить заказ")], resize_keyboard=True
-            ))
+            # Если корзина не пуста, предлагаем выбор адреса
+            keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+            # Получаем адрес из регистрации
+            cursor.execute("SELECT address FROM customers WHERE user_id=?", (user_id,))
+            user_data = cursor.fetchone()
+
+            if user_data and user_data[0]:
+                address = user_data[0]
+                keyboard.add(types.KeyboardButton(address))
+            else:
+                # Если адреса в регистрации нет, предлагаем указать адрес
+                keyboard.add(types.KeyboardButton("Указать адрес"))
+
+            bot.send_message(user_id, "Выберите или укажите адрес:", reply_markup=keyboard)
+            bot.register_next_step_handler(message, lambda msg: address_step(msg, 'address_choice'))
         else:
-            # Если корзина пуста, уведомляем пользователя и убираем кнопку "Оформить заказ"
+            # Если корзина пуста, уведомляем пользователя
             bot.send_message(user_id, "Ваша корзина пуста")
 
+def calculate_total_price(basket):
+    total_price = 0
 
-# Обработчик команды "Оценить блюдо"
+    with conn:
+        for item in basket:
+            dish_id = item['dish_id']
+
+            # Получаем цену товара из таблицы products
+            cursor.execute("SELECT price FROM products WHERE product_id=?", (dish_id,))
+            product_info = cursor.fetchone()
+
+            if product_info:
+                price = product_info[0]
+                quantity = item['quantity']
+
+                # Суммируем цены товаров
+                total_price += price * quantity
+
+    return total_price
+
+# Обработка шага "address_choice"
+def address_step(message, step):
+    user_id = message.from_user.id
+    basket = []
+
+    if step == 'address_choice':
+        # Пользователь выбрал адрес из регистрации
+        address = message.text
+
+        # Получаем данные о корзине пользователя
+        with conn:
+            cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
+            user_data = cursor.fetchone()
+
+            if user_data:
+                basket = json.loads(user_data[0]) if user_data[0] else []
+
+
+        # Вычисляем общую стоимость заказа
+        total_price = calculate_total_price(basket)  # Реализуйте эту функцию
+
+        # Вставляем запись в таблицу orders
+        with conn:
+            cursor.execute("INSERT INTO orders (user_id, address, total_price, estimated_delivery_time, basket) "
+                           "VALUES (?, ?, ?, ?, ?)",
+                           (user_id, address, total_price, 30, json.dumps(basket)))
+            conn.commit()
+
+            # Очищаем корзину пользователя
+            cursor.execute("UPDATE users SET basket = ? WHERE user_id = ?", (None, user_id))
+            conn.commit()
+
+        # Отправляем пользователю примерное время ожидания
+        estimated_delivery_time = 30  # в минутах
+        bot.send_message(user_id, f"Спасибо! Ваш заказ принят. Ожидайте доставку по адресу: {address}. "
+                                   f"Примерное время ожидания: {estimated_delivery_time} минут.", reply_markup=main_menu)
+
+# Функция для отображения истории заказов
+def show_order_history(user_id):
+    with conn:
+        # Получаем все заказы пользователя из таблицы orders
+        cursor.execute("SELECT order_id, total_price, estimated_delivery_time FROM orders WHERE user_id=?", (user_id,))
+        orders = cursor.fetchall()
+
+    if orders:
+        # Если есть заказы, формируем клавиатуру с их списком
+        keyboard = types.InlineKeyboardMarkup()
+
+        for order in orders:
+            order_id, total_price, estimated_delivery_time = order
+            callback_data = f"order_info:{order_id}"
+            button_text = f"Заказ #{order_id}, Сумма: {total_price} руб., Время доставки: {estimated_delivery_time} мин."
+            keyboard.add(types.InlineKeyboardButton(button_text, callback_data=callback_data))
+
+        # Отправляем сообщение с клавиатурой
+        bot.send_message(user_id, "Выберите заказ из истории:", reply_markup=keyboard)
+    else:
+        # Если нет заказов, уведомляем пользователя
+        bot.send_message(user_id, "У вас пока нет заказов в истории.")
+
+# Обработчик нажатия на кнопку с информацией о заказе
+@bot.callback_query_handler(func=lambda call: call.data.startswith("order_info:"))
+def handle_order_info_callback(call):
+    user_id = call.from_user.id
+    order_id = int(call.data.split(":")[1])
+
+    # Получаем информацию о заказе из базы данных
+    with conn:
+        cursor.execute("SELECT total_price, estimated_delivery_time, basket FROM orders WHERE order_id=? AND user_id=?", (order_id, user_id))
+        order_info = cursor.fetchone()
+
+    if order_info:
+        total_price, estimated_delivery_time, basket_json = order_info
+        basket = json.loads(basket_json) if basket_json else []
+
+        # Формируем сообщение с информацией о заказе
+        order_message = f"Информация о заказе #{order_id}:\n\n"
+        for item in basket:
+            # Загружаем информацию о блюде из базы данных по его идентификатору
+            cursor.execute("SELECT name FROM products WHERE product_id=?", (item['dish_id'],))
+            product_info = cursor.fetchone()
+
+            if product_info:
+                dish_name = product_info[0]
+                order_message += f"{dish_name} (количество: {item['quantity']})\n"
+
+        order_message += f"\nИтого: {total_price} руб.\n"
+        order_message += f"Примерное время ожидания: {estimated_delivery_time} минут."
+
+        # Отправляем сообщение с информацией о заказе
+        bot.edit_message_text(chat_id=user_id, message_id=call.message.message_id, text=order_message)
+    else:
+        # Если информация о заказе не найдена, отправляем уведомление
+        bot.answer_callback_query(callback_query_id=call.id, show_alert=True, text="Информация о заказе не найдена.")
+
+@bot.message_handler(func=lambda message: message.text == "История заказов")
+def handle_order_history(message):
+    user_id = message.from_user.id
+    show_order_history(user_id)
+
+
+"""# Обработчик команды "Оценить блюдо"
 @bot.message_handler(func=lambda message: message.text == "Оценить блюдо")
 def handle_rate_dish(message):
     user_id = message.from_user.id
 
     with conn:
-        # Проверяем, есть ли успешные заказы
+        # Получаем блюда из базы данных
+        cursor.execute("SELECT * FROM products")
+        dishes = cursor.fetchall()
+
+        # Генерируем клавиатуру с блюдами для оценки
+        keyboard = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
+        for dish in dishes:
+            dish_id, dish_name, _, _, _, _ = dish
+            keyboard.add(types.KeyboardButton(f"Оценить {dish_name}"))
+
+        bot.send_message(user_id, "Выберите блюдо для оценки:", reply_markup=keyboard)
+
+# Обработчик для оценки блюда
+@bot.message_handler(func=lambda message: message.text.startswith("Оценить "))
+def handle_dish_rating(message):
+    user_id = message.from_user.id
+    dish_name = message.text.replace("Оценить ", "")
+
+    with conn:
+        # Получаем информацию о блюде
+        cursor.execute("SELECT * FROM products WHERE name=?", (dish_name,))
+        dish_info = cursor.fetchone()
+
+        if dish_info:
+            dish_id, _, _, _, rating, total_ratings = dish_info
+
+            # Получаем текущую оценку блюда от пользователя
+            cursor.execute("SELECT rating FROM dish_comments WHERE user_id=? AND product_id=?", (user_id, dish_id))
+            user_rating = cursor.fetchone()
+
+            if user_rating:
+                bot.send_message(user_id, f"Вы уже оценили {dish_name} на {user_rating[0]} звезд(ы).")
+            else:
+                # Получаем новую оценку от пользователя
+                new_rating = int(message.text.split()[-1])
+
+                # Обновляем общую оценку и количество оценок для блюда
+                total_ratings += 1
+                rating = ((rating * (total_ratings - 1)) + new_rating) / total_ratings
+
+                # Сохраняем новую оценку пользователя
+                cursor.execute("INSERT INTO dish_comments (user_id, product_id, comment_text) VALUES (?, ?, ?)",
+                               (user_id, dish_id, f"Оценка: {new_rating} звезд(ы)"))
+                cursor.execute("UPDATE products SET rating=?, total_ratings=? WHERE product_id=?", (rating, total_ratings, dish_id))
+                conn.commit()
+
+                bot.send_message(user_id, f"Спасибо за вашу оценку {dish_name}! Средняя оценка теперь {rating:.2f} звезд(ы).")
+
+# Обработчик команды "Оставить комментарий к заказу"
+@bot.message_handler(func=lambda message: message.text == "Оставить комментарий к заказу")
+def handle_order_comment(message):
+    user_id = message.from_user.id
+
+    with conn:
+        # Получаем заказы пользователя
         cursor.execute("SELECT * FROM orders WHERE user_id=?", (user_id,))
-        successful_orders = cursor.fetchall()
+        user_orders = cursor.fetchall()
 
-        if successful_orders:
-            # Если есть успешные заказы, показываем кнопку "Оценить блюдо"
-            bot.send_message(user_id, "Оцените блюдо", reply_markup=types.ReplyKeyboardMarkup(
-                keyboard=[types.KeyboardButton("Оценить блюдо")], resize_keyboard=True
-            ))
+        if not user_orders:
+            bot.send_message(user_id, "У вас нет заказов для комментирования.")
+            return
+
+        # Генерируем клавиатуру с заказами для комментирования
+        keyboard = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
+        for order in user_orders:
+            order_id, _, _, _, _, _, status, _ = order
+            keyboard.add(types.KeyboardButton(f"Комментировать заказ #{order_id} ({status})"))
+
+        bot.send_message(user_id, "Выберите заказ для оставления комментария:", reply_markup=keyboard)
+
+# Обработчик для оставления комментария к заказу
+@bot.message_handler(func=lambda message: message.text.startswith("Комментировать заказ #"))
+def handle_order_comment_text(message):
+    user_id = message.from_user.id
+    order_id = int(message.text.split()[2])
+
+    with conn:
+        # Получаем информацию о заказе
+        cursor.execute("SELECT * FROM orders WHERE order_id=?", (order_id,))
+        order_info = cursor.fetchone()
+
+        if order_info:
+            _, _, _, _, _, _, status, _, _ = order_info
+
+            # Пользователь может оставить комментарий только к выполненным заказам
+            if status == "выполнен":
+                # Получаем текущий комментарий пользователя к заказу
+                cursor.execute("SELECT comment_text FROM order_comments WHERE user_id=? AND order_id=?", (user_id, order_id))
+                user_comment = cursor.fetchone()
+
+                if user_comment:
+                    bot.send_message(user_id, f"Вы уже оставили комментарий к этому заказу:\n{user_comment[0]}")
+                else:
+                    # Сохраняем новый комментарий пользователя
+                    comment_text = message.text.replace(f"Комментировать заказ #{order_id} (выполнен) ", "")
+                    cursor.execute("INSERT INTO order_comments (user_id, order_id, comment_text) VALUES (?, ?, ?)",
+                                   (user_id, order_id, comment_text))
+                    conn.commit()
+
+                    bot.send_message(user_id, f"Спасибо за ваш комментарий к заказу #{order_id}!\n{comment_text}")
+            else:
+                bot.send_message(user_id, "Вы можете оставить комментарий только к выполненным заказам.")
         else:
-            # Если нет успешных заказов, уведомляем пользователя и убираем кнопку "Оценить блюдо"
-            bot.send_message(user_id, "У вас нет успешных заказов для оценки")
+            bot.send_message(user_id, f"Заказ #{order_id} не найден.")
 
+# Обработчик команды "Показать комментарии к блюдам"
+@bot.message_handler(func=lambda message: message.text == "Показать комментарии к блюдам")
+def handle_show_dish_comments(message):
+    user_id = message.from_user.id
+
+    with conn:
+        # Получаем блюда из базы данных
+        cursor.execute("SELECT * FROM products")
+        dishes = cursor.fetchall()
+
+        # Генерируем клавиатуру с блюдами для просмотра комментариев
+        keyboard = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
+        for dish in dishes:
+            dish_id, dish_name, _, _, _, _ = dish
+            keyboard.add(types.KeyboardButton(f"Комментарии к {dish_name}"))
+
+        bot.send_message(user_id, "Выберите блюдо для просмотра комментариев:", reply_markup=keyboard)
+
+# Обработчик для показа комментариев к блюду
+@bot.message_handler(func=lambda message: message.text.startswith("Комментарии к "))
+def handle_show_dish_comments_text(message):
+    user_id = message.from_user.id
+    dish_name = message.text.replace("Комментарии к ", "")
+
+    with conn:
+        # Получаем информацию о блюде
+        cursor.execute("SELECT * FROM products WHERE name=?", (dish_name,))
+        dish_info = cursor.fetchone()
+
+        if dish_info:
+            dish_id, _, _, _, _, _ = dish_info
+
+            # Получаем комментарии к блюду
+            cursor.execute("SELECT comment_text FROM dish_comments WHERE product_id=?", (dish_id,))
+            dish_comments = cursor.fetchall()
+
+            if dish_comments:
+                # Отправляем комментарии пользователю
+                comments_text = "\n".join([f"{i + 1}. {comment[0]}" for i, comment in enumerate(dish_comments)])
+                bot.send_message(user_id, f"Комментарии к {dish_name}:\n{comments_text}")
+            else:
+                bot.send_message(user_id, f"У блюда {dish_name} нет комментариев.")
+        else:
+            bot.send_message(user_id, f"Блюдо {dish_name} не найдено.")"""
 
 # Запуск бота
 print("Ready")

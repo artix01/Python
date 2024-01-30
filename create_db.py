@@ -21,7 +21,7 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS users (
 
 # Создание таблицы для администраторов
 cursor.execute('''CREATE TABLE IF NOT EXISTS administrators (
-                    admin_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER PRIMARY KEY,
                     user_id INTEGER,
                     admin_level INTEGER     
                 )''')
@@ -33,25 +33,44 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS customers (
                     email TEXT,
                     address TEXT,
                     payment_method TEXT
-                    registration_step TEXT
                 )''')
 
 # Создание таблицы заказов
 cursor.execute('''CREATE TABLE IF NOT EXISTS orders (
-                    user_id INTEGER PRIMARY KEY,
-                    customer_id INTEGER,
-                    product_id INTEGER,
-                    quantity INTEGER,
-                    FOREIGN KEY (customer_id) REFERENCES customers (id),
-                    FOREIGN KEY (product_id) REFERENCES products (id)
+                    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    address TEXT,
+                    total_price REAL NOT NULL,
+                    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    estimated_delivery_time INTEGER,
+                    status TEXT DEFAULT 'в ожидании',  
+                    basket TEXT,    
+                    rated INTEGER DEFAULT 0,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )''')
 
 # Создание таблицы продуктов
 cursor.execute('''CREATE TABLE IF NOT EXISTS products (
-                    product_id INTEGER PRIMARY KEY,
-                    name TEXT,
-                    description TEXT,
-                    price REAL
-                )''')
+    product_id INTEGER PRIMARY KEY,
+    name TEXT,
+    description TEXT,
+    price REAL,
+    rating REAL DEFAULT 4.0,  -- По умолчанию 4 звезды
+    total_ratings INTEGER DEFAULT 0  -- Общее количество оценок
+)''')
+
+cursor.execute('''CREATE TABLE IF NOT EXISTS dish_comments (
+    comment_id INTEGER PRIMARY KEY,
+    user_id INTEGER,
+    product_id INTEGER,
+    comment_text TEXT
+)''')
+
+cursor.execute('''CREATE TABLE IF NOT EXISTS order_comments (
+    comment_id INTEGER PRIMARY KEY,
+    user_id INTEGER,
+    order_id INTEGER,
+    comment_text TEXT
+)''')
 
 conn.commit()

@@ -4,8 +4,7 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 import time
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from telebot.types import InputMediaPhoto
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 # Путь к файлу с настройками и ключами
 config_file_path = 'config.json'
 
@@ -26,7 +25,6 @@ cursor = conn.cursor()
 main_menu = types.ReplyKeyboardMarkup(resize_keyboard=True)
 main_menu.add(types.KeyboardButton("Меню"))
 main_menu.add(types.KeyboardButton("Корзина"))
-main_menu.add(types.KeyboardButton("Оформить заказ"))
 main_menu.add(types.KeyboardButton("История заказов"))
 main_menu.add(types.KeyboardButton("Оценить блюдо"))
 
@@ -133,37 +131,236 @@ def payment_method_keyboard():
     keyboard.add(types.KeyboardButton("Наличные"))
     return keyboard
 
+
+# Глобальная переменная для хранения категорий блюд
+categories = []
+current_category = None
+g_dishes = None
 # Обработчик команды "Меню"
 @bot.message_handler(func=lambda message: message.text == "Меню")
 def handle_menu(message):
+    global categories
     user_id = message.from_user.id
 
     with conn:
-        # Получаем список блюд из базы данных (предположим, что у вас есть таблица 'products')
-        cursor.execute("SELECT * FROM products")
+        # Получаем список категорий из базы данных
+        cursor.execute("SELECT DISTINCT categories FROM products")
+        categories = cursor.fetchall()
+
+        if categories:
+            # Формируем клавиатуру с кнопками для переключения между категориями
+            category_buttons = InlineKeyboardMarkup(row_width=2)
+            for category in categories:
+                category_name = category[0]
+                category_buttons.add(InlineKeyboardButton(category_name, callback_data=f"category:{category_name}"))
+
+            # Отправляем сообщение с кнопками категорий
+            bot.send_message(user_id, "Выберите категорию:", reply_markup=category_buttons)
+        else:
+            bot.send_message(user_id, "Извините, меню временно недоступно.")
+
+# Обработчик нажатия на кнопку переключения между блюдами
+@bot.callback_query_handler(func=lambda call: call.data.startswith("next_dish:") or call.data.startswith("prev_dish:"))
+def handle_dish_switch_callback(call):
+    global current_category, g_dishes
+    print("handle_dish_switch_callback", current_category)
+    user_id = call.from_user.id
+    print(call.data)
+    action, dish_index, total_dishes = call.data.split(":")
+
+    dish_index = int(dish_index)
+    total_dishes = int(total_dishes)
+
+    with conn:
+        cursor.execute("SELECT * FROM products WHERE categories=?", (current_category,))
+        dishes = cursor.fetchall()
+        g_dishes = dishes
+        print("dishes", dishes, "current dish index", dish_index)
+
+        if total_dishes == 1:
+            # Если в категории всего одно блюдо, игнорируем запрос
+            bot.answer_callback_query(callback_query_id=call.id, text="В данной категории только одно блюдо")
+            return
+
+        # Отправляем сообщение с карточкой следующего блюда
+        if action == "next_dish":
+            next_dish_index = (dish_index + 1) % total_dishes
+        else:
+            next_dish_index = (dish_index - 1) % total_dishes
+
+        send_dish_card(user_id, dishes[next_dish_index], next_dish_index, total_dishes, current_category, call.message.message_id)
+
+# Обработчик нажатия на кнопку переключения категории (следующая или предыдущая)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("next_category:") or call.data.startswith("prev_category:"))
+def handle_category_switch_callback(call):
+    global current_category, g_dishes
+    user_id = call.from_user.id
+    action, current_category_name = call.data.split(":")
+    print(current_category_name)
+    print(categories)
+    current_category_index = categories.index((current_category_name,))
+    print(current_category_index)
+    categories_count = len(categories)
+
+    if action == "next_category":
+        next_category_index = (current_category_index + 1) % categories_count
+    else:
+        next_category_index = (current_category_index - 1) % categories_count
+
+    next_category_name = categories[next_category_index][0]  # Получаем только имя категории
+    current_category = next_category_name  # Обновляем текущую категорию
+
+    with conn:
+        cursor.execute("SELECT * FROM products WHERE categories=?", (next_category_name,))
+        dishes = cursor.fetchall()
+        g_dishes = dishes
+        if dishes:
+            send_dish_card(user_id, dishes[0], 0, len(dishes), next_category_name, call.message.message_id)
+        else:
+            bot.send_message(user_id, "В данной категории нет блюд.")
+
+# Обработчик нажатия на кнопку категории
+@bot.callback_query_handler(func=lambda call: call.data.startswith("category:"))
+def handle_category_callback(call):
+    global current_category, g_dishes
+    category_name = call.data.split(":")[1]
+    user_id = call.from_user.id
+
+    with conn:
+        cursor.execute("SELECT * FROM products WHERE categories=?", (category_name,))
         dishes = cursor.fetchall()
 
         if dishes:
-            # Если есть блюда, создаем InlineKeyboard с кнопками для каждого блюда
-            keyboard = InlineKeyboardMarkup(row_width=1)
-
-            for dish in dishes:
-                dish_id, dish_name, dish_description, dish_price = dish
-                button_text = f"{dish_name}\n{dish_description}\nЦена: {dish_price} руб."
-                callback_data = f"add_to_cart:{dish_id}"  # пример callback_data, можно изменить по вашему усмотрению
-                keyboard.add(InlineKeyboardButton(button_text, callback_data=callback_data))
-
-            # Отправляем сообщение с меню блюд
-            bot.send_message(user_id, "Выберите блюдо из меню:", reply_markup=keyboard)
+            send_dish_card(user_id, dishes[0], 0, len(dishes), category_name, call.message.message_id)
+            current_category = category_name
+            g_dishes= dishes
+            print("current_category", current_category, "dishes[0]", dishes[0])
         else:
-            # Если меню пусто, уведомляем пользователя
-            bot.send_message(user_id, "Извините, меню временно недоступно.")
+            bot.send_message(user_id, "В данной категории нет блюд.")
+
+# Функция для отправки сообщения с карточкой блюда и кнопками навигации
+def send_dish_card(user_id, dish, current_index, total_dishes, current_category, message_id=None, quantity=1):
+    dish_id, dish_name, dish_description, dish_price, dish_rating, total_ratings, category = dish
+    print("send dish card", current_category, category, "dish", dish)
+
+    prev_category = (categories.index((current_category,)) - 1) % len(categories)
+    next_category = (categories.index((current_category,)) + 1) % len(categories)
+    print(prev_category)
+    # Создаем клавиатуру с кнопками переключения блюд и категорий
+    navigation_buttons = InlineKeyboardMarkup(row_width=3)
+    prev_button = InlineKeyboardButton("◀️", callback_data=f"prev_dish:{current_index}:{total_dishes}")
+    next_button = InlineKeyboardButton("▶️", callback_data=f"next_dish:{current_index}:{total_dishes}")
+    prev_category_button = InlineKeyboardButton(f"⬅️ {categories[prev_category][0]}",
+                                                callback_data=f"prev_category:{current_category}")
+    next_category_button = InlineKeyboardButton(f"{categories[next_category][0]} ➡️",
+                                                callback_data=f"next_category:{current_category}")
+
+    plus_button = InlineKeyboardButton("+", callback_data=f"increase_quantity:{quantity}:{current_index}")
+    quantity_button = InlineKeyboardButton(str(quantity), callback_data="ignore")
+    minus_button = InlineKeyboardButton("-", callback_data=f"decrease_quantity:{quantity}:{current_index}")
+
+    add_to_basket_button = InlineKeyboardButton("🛒Добавить в корзину", callback_data=f"add_to_basket:{quantity}:{current_index}")
+
+    navigation_buttons.row(prev_button, minus_button, quantity_button, plus_button, next_button)
+    navigation_buttons.row(prev_category_button, next_category_button)
+    navigation_buttons.row(add_to_basket_button)
+    print(dish_name)
+    # Формируем сообщение с карточкой блюда и кнопками навигации
+    message_text = f"{dish_name}\n{dish_description}\nЦена: {dish_price} руб.\n\n"
+    message_text += f"Блюдо {current_index + 1} из {total_dishes}"
+    image_path = f"images/{dish_id}.jpg"
+
+    try:
+        if message_id:
+            bot.edit_message_media(chat_id=user_id, message_id=message_id,
+                                   media=InputMediaPhoto(open(image_path, 'rb'), caption=message_text),
+                                   reply_markup=navigation_buttons)
+    except:
+        bot.send_photo(user_id, open(image_path, 'rb'), caption=message_text, reply_markup=navigation_buttons)
+
+# Обработчик нажатия кнопки "+"
+@bot.callback_query_handler(func=lambda call: call.data.startswith("increase_quantity:"))
+def handle_increase_quantity(call):
+    user_id = call.from_user.id
+    quantity = int(call.data.split(":")[1]) + 1  # Увеличиваем количество на 1
+    current_index = int(call.data.split(":")[2])
+    print("cat", g_dishes[current_index][6])
+    send_dish_card(user_id, g_dishes[current_index], current_index, len(g_dishes), g_dishes[current_index][6], call.message.message_id, quantity=quantity)
+
+# Обработчик нажатия кнопки "-"
+@bot.callback_query_handler(func=lambda call: call.data.startswith("decrease_quantity:"))
+def handle_decrease_quantity(call):
+    user_id = call.from_user.id
+    quantity = int(call.data.split(":")[1]) - 1  # Уменьшаем количество на 1
+    current_index = int(call.data.split(":")[2])
+
+    if quantity < 1:
+        # Если количество стало меньше 1, игнорируем запрос
+        bot.answer_callback_query(callback_query_id=call.id, text="Количество не может быть меньше 1")
+        return
+    # Переотправляем сообщение с карточкой блюда с обновленным количеством
+    send_dish_card(user_id, g_dishes[current_index], current_index, len(g_dishes), g_dishes[current_index][6], call.message.message_id, quantity=quantity)
+
+# Обработчик нажатия кнопки "Добавить в корзину"
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_to_basket:"))
+def handle_add_to_cart(call):
+    user_id = call.from_user.id
+    quantity = int(call.data.split(":")[1])
+    current_index = int(call.data.split(":")[2])
+    product_id = g_dishes[current_index][0]  # Получаем id продукта из данных кнопки
+
+    # Получаем информацию о выбранном блюде из базы данных
+    with conn:
+        cursor.execute("SELECT * FROM products WHERE product_id=?", (product_id,))
+        product = cursor.fetchone()
+
+        if product:
+            # Получаем корзину пользователя из базы данных
+            cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
+            basket_data = cursor.fetchone()
+
+            if basket_data:
+                # Если корзина не пуста, загружаем её из JSON
+                basket = json.loads(basket_data[0])
+            else:
+                # Если корзина пуста, создаем новую
+                basket = []
+
+            # Проверяем, есть ли уже такой продукт в корзине
+            product_found = False
+            for item in basket:
+                if item['product_id'] == product_id:
+                    # Если товар найден в корзине, обновляем его количество
+                    item['quantity'] += quantity
+                    product_found = True
+                    break
+
+            # Если товар не найден в корзине, добавляем его
+            if not product_found:
+                basket.append({
+                    "product_id": product_id,
+                    "quantity": quantity
+                })
+
+            # Обновляем корзину пользователя в базе данных
+            cursor.execute("UPDATE users SET basket=? WHERE user_id=?", (json.dumps(basket), user_id))
+            conn.commit()
+
+            # Отправляем пользователю сообщение о добавлении в корзину
+            bot.answer_callback_query(callback_query_id=call.id, text=f"{product[1]} добавлен в корзину")
+
+        else:
+            bot.answer_callback_query(callback_query_id=call.id, text="Произошла ошибка при добавлении в корзину")
+
 
 # Обработчик команды "Корзина"
 @bot.message_handler(func=lambda message: message.text == "Корзина")
 def handle_cart_menu(message):
     user_id = message.from_user.id
 
+    send_basket_dish_card(user_id)
+
+def send_basket_dish_card(user_id, message_id=None, current_index=0):
     # Получаем текущую корзину пользователя
     with conn:
         cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
@@ -178,156 +375,134 @@ def handle_cart_menu(message):
         bot.send_message(user_id, "Ваша корзина пуста.")
         return
 
-    # Формируем сообщение с продуктами в корзине
-    cart_message = "Ваша корзина:\n"
-    keyboard = types.InlineKeyboardMarkup()
+    # Переменная для хранения инлайн клавиатуры
+    keyboard = InlineKeyboardMarkup(row_width=3)
 
-    for item in basket:
-        # Загружаем информацию о блюде из базы данных по его идентификатору
-        cursor.execute("SELECT name FROM products WHERE product_id=?", (item['dish_id'],))
-        product_info = cursor.fetchone()
+    # Переменная для хранения данных о корзине
+    total_items = len(basket)
 
-        if product_info:
-            dish_name = product_info[0]
-            cart_message += f"{dish_name} (количество: {item['quantity']})\n"
+    # Получаем информацию о текущем товаре в корзине
+    current_item = basket[current_index]
+    product_id = current_item['product_id']
+    quantity = current_item['quantity']
+    print("index", current_index)
+    # Получаем информацию о товаре из базы данных
+    cursor.execute("SELECT name, price FROM products WHERE product_id=?", (product_id,))
+    product_info = cursor.fetchone()
 
-            # Создаем callback_data с уникальным идентификатором блюда
-            delete_callback_data = f"cart_item:delete:{item['dish_id']}"
-            increase_callback_data = f"cart_item:increase:{item['dish_id']}"
-            decrease_callback_data = f"cart_item:decrease:{item['dish_id']}"
+    if product_info:
+        dish_name = product_info[0]
+        dish_price = product_info[1]
+        image_path = f"images/{product_id}.jpg"
+        cart_message = f"{dish_name} (количество: {quantity}, цена: {dish_price} руб.)"
+        cart_message += f"\nБлюдо {current_index + 1} из {total_items}"
 
-            # Создаем кнопки для удаления, увеличения и уменьшения количества блюда
-            delete_button = types.InlineKeyboardButton(f"Удалить {dish_name}", callback_data=delete_callback_data)
-            increase_button = types.InlineKeyboardButton(f"+", callback_data=increase_callback_data)
-            decrease_button = types.InlineKeyboardButton(f"-", callback_data=decrease_callback_data)
+        # Создаем кнопки для управления количеством товара и кнопку удаления товара
+        increase_button = InlineKeyboardButton("+", callback_data=f"cart_item:increase:{current_index}:{quantity}")
+        decrease_button = InlineKeyboardButton("-", callback_data=f"cart_item:decrease:{current_index}:{quantity}")
+        delete_button = InlineKeyboardButton(f"Удалить {dish_name}", callback_data=f"cart_item:delete:{product_id}")
 
-            keyboard.add(delete_button, increase_button, decrease_button)
+        # Создаем кнопки для переключения между товарами в корзине
+        prev_button = InlineKeyboardButton("◀️", callback_data=f"prev_cart_item:{current_index}:{total_items}")
+        next_button = InlineKeyboardButton("▶️", callback_data=f"next_cart_item:{current_index}:{total_items}")
+        keyboard.row(prev_button, decrease_button, increase_button, next_button)
+        keyboard.add(delete_button)
 
-    # Отправляем сообщение с корзиной и кнопками удаления, увеличения и уменьшения
-    bot.send_message(user_id, cart_message, reply_markup=keyboard)
+        if message_id:
+            bot.edit_message_media(chat_id=user_id, message_id=message_id,
+                                   media=InputMediaPhoto(open(image_path, 'rb'), caption=cart_message),
+                                   reply_markup=keyboard)
+        else:
+            bot.send_photo(user_id, open(image_path, 'rb'), caption=cart_message, reply_markup=keyboard)
 
-
-# Обработчик нажатия на кнопку в InlineKeyboard (удаление или изменение количества блюда в корзине)
+# Обработчик нажатия кнопок изменения quantity(basket) и удаления товара из корзины
 @bot.callback_query_handler(func=lambda call: call.data.startswith("cart_item:"))
-def handle_cart_item_callback(call):
+def handle_change_quantity(call):
     user_id = call.from_user.id
-    action, dish_id = call.data.split(":")[1:]
+    current_index = int(call.data.split(":")[2])
 
-    # Получаем текущую корзину пользователя
-    with conn:
-        cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
-        user_data = cursor.fetchone()
+    # Определяем операцию: увеличение, уменьшение количества товара или удаление товара
+    operation = call.data.split(":")[1]
+    if operation == "increase":
+        new_quantity = int(call.data.split(":")[3]) + 1  # Увеличиваем количество на 1
+    elif operation == "decrease":
+        if int(call.data.split(":")[3]) <= 1:
+            # Если количество стало меньше 1, игнорируем запрос
+            bot.answer_callback_query(callback_query_id=call.id, text="Количество не может быть меньше 1")
+            return
+        new_quantity = int(call.data.split(":")[3]) - 1  # Уменьшаем количество на 1
+    elif operation == "delete":
+        # Получаем идентификатор удаляемого товара
+        product_id = int(call.data.split(":")[2])
 
-        if user_data:
-            basket = json.loads(user_data[0]) if user_data[0] else []  # Разбираем JSON, если корзина не пуста
-        else:
-            basket = []
+        # Получаем текущую корзину пользователя из базы данных
+        with conn:
+            cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
+            user_data = cursor.fetchone()
 
-        # Находим позицию в корзине по dish_id
-        selected_item = next((item for item in basket if item['dish_id'] == int(dish_id)), None)
+            if user_data:
+                basket = json.loads(user_data[0]) if user_data[0] else []  # Разбираем JSON, если корзина не пуста
+            else:
+                basket = []
 
-        if selected_item:
-            # Выполняем действие в зависимости от выбранной кнопки
-            if action == "delete":
-                # Удаляем блюдо из корзины
-                basket.remove(selected_item)
-            elif action == "increase":
-                # Увеличиваем количество блюда
-                selected_item['quantity'] += 1
-            elif action == "decrease":
-                # Уменьшаем количество блюда, не может быть меньше 1
-                selected_item['quantity'] = max(1, selected_item['quantity'] - 1)
+            # Удаляем товар из корзины по его идентификатору
+            new_basket = [item for item in basket if item['product_id'] != product_id]
 
-            # Обновляем корзину в базе данных
-            cursor.execute("UPDATE users SET basket = ? WHERE user_id = ?", (json.dumps(basket), user_id))
+            # Обновляем корзину пользователя в базе данных
+            cursor.execute("UPDATE users SET basket=? WHERE user_id=?", (json.dumps(new_basket), user_id))
+            conn.commit()
 
-    # Обновляем сообщение с корзиной после удаления или изменения количества
-    update_cart_message(call.message)
-
-# Обработчик нажатия на кнопку в InlineKeyboard(menu)
-@bot.callback_query_handler(func=lambda call: call.data.startswith("add_to_cart:"))
-def handle_inline_callback(call):
-    user_id = call.from_user.id
-    dish_id = int(call.data.split(":")[1])
-
-    # Получаем текущую корзину пользователя
-    with conn:
-        cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
-        user_data = cursor.fetchone()
-
-        if user_data:
-            basket = json.loads(user_data[0]) if user_data[0] else []  # Разбираем JSON, если корзина не пуста
-        else:
-            basket = []
-
-        # Проверяем, есть ли уже такое блюдо в корзине
-        existing_dish = next((item for item in basket if item['dish_id'] == dish_id), None)
-
-        if existing_dish:
-            # Если блюдо уже в корзине, увеличиваем количество
-            existing_dish['quantity'] += 1
-        else:
-            # Если блюда нет в корзине, добавляем его
-            new_dish = {'dish_id': dish_id, 'quantity': 1}
-            basket.append(new_dish)
-
-        # Обновляем корзину в базе данных
-        cursor.execute("UPDATE users SET basket = ? WHERE user_id = ?", (json.dumps(basket), user_id))
-
-    # Отправляем сообщение, что блюдо добавлено в корзину
-    bot.answer_callback_query(callback_query_id=call.id, show_alert=True, text="Блюдо добавлено в корзину!")
-
-    # Обновляем сообщение с корзиной после добавления блюда
-    update_cart_message(call.message)
-
-def update_cart_message(message):
-    user_id = message.chat.id
-
-    # Получаем текущую корзину пользователя
-    with conn:
-        cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
-        user_data = cursor.fetchone()
-
-        if user_data:
-            basket = json.loads(user_data[0]) if user_data[0] else []  # Разбираем JSON, если корзина не пуста
-        else:
-            basket = []
-
-    if not basket:
-        bot.send_message(user_id, "Ваша корзина пуста.")
+        # Отправляем обновленную информацию о корзине пользователю
+        send_basket_dish_card(user_id, call.message.message_id)
         return
 
-    # Формируем сообщение с продуктами в корзине
-    cart_message = "Ваша корзина:\n"
-    keyboard = types.InlineKeyboardMarkup()
+    # Получаем текущую корзину пользователя из базы данных
+    with conn:
+        cursor.execute("SELECT basket FROM users WHERE user_id=?", (user_id,))
+        user_data = cursor.fetchone()
 
-    for item in basket:
-        # Загружаем информацию о блюде из базы данных по его идентификатору
-        cursor.execute("SELECT name FROM products WHERE product_id=?", (item['dish_id'],))
-        product_info = cursor.fetchone()
+        if user_data:
+            basket = json.loads(user_data[0]) if user_data[0] else []  # Разбираем JSON, если корзина не пуста
+        else:
+            basket = []
 
-        if product_info:
-            dish_name = product_info[0]
-            cart_message += f"{dish_name} (количество: {item['quantity']})\n"
+        # Обновляем количество товара в корзине
+        basket[current_index]['quantity'] = new_quantity
 
-            # Создаем callback_data с уникальным идентификатором блюда
-            delete_callback_data = f"cart_item:delete:{item['dish_id']}"
-            increase_callback_data = f"cart_item:increase:{item['dish_id']}"
-            decrease_callback_data = f"cart_item:decrease:{item['dish_id']}"
+        # Обновляем корзину пользователя в базе данных
+        cursor.execute("UPDATE users SET basket=? WHERE user_id=?", (json.dumps(basket), user_id))
+        conn.commit()
 
-            # Создаем кнопки для удаления, увеличения и уменьшения количества блюда
-            delete_button = types.InlineKeyboardButton(f"Удалить {dish_name}", callback_data=delete_callback_data)
-            increase_button = types.InlineKeyboardButton(f"+", callback_data=increase_callback_data)
-            decrease_button = types.InlineKeyboardButton(f"-", callback_data=decrease_callback_data)
+    # Отправляем обновленную информацию о корзине пользователю
+    send_basket_dish_card(user_id, call.message.message_id, current_index=current_index)
 
-            keyboard.add(delete_button, increase_button, decrease_button)
 
-    # Отправляем сообщение с корзиной и кнопками удаления, увеличения и уменьшения
-    bot.edit_message_text(chat_id=user_id, message_id=message.message_id, text=cart_message, reply_markup=keyboard)
 
+# Обработчик нажатия кнопок переключения между товарами в корзине
+@bot.callback_query_handler(func=lambda call: call.data.startswith("prev_cart_item") or call.data.startswith("next_cart_item"))
+def handle_change_cart_item(call):
+    user_id = call.from_user.id
+
+    # Определяем текущий индекс товара в корзине
+    current_index = int(call.data.split(":")[1])
+    total_items = int(call.data.split(":")[2])
+
+    if total_items == 1:
+        # Если в категории всего одно блюдо, игнорируем запрос
+        bot.answer_callback_query(callback_query_id=call.id, text="В корзине только одно блюдо")
+        return
+
+    # Переключаемся к следующему товару
+    if call.data.startswith("next_cart_item"):
+        next_index = (current_index + 1) % total_items
+    # Переключаемся к предыдущему товару
+    else:
+        next_index = (current_index - 1) % total_items
+
+    send_basket_dish_card(user_id, call.message.message_id, next_index)
 
 # Обработчик команды "Оформить заказ"
-@bot.message_handler(func=lambda message: message.text == "Оформить заказ")
+@bot.callback_query_handler(func=lambda call: call.data == "checkout")
 def handle_checkout(message):
     user_id = message.from_user.id
 
@@ -393,7 +568,6 @@ def address_step(message, step):
             if user_data:
                 basket = json.loads(user_data[0]) if user_data[0] else []
 
-
         # Вычисляем общую стоимость заказа
         total_price = calculate_total_price(basket)  # Реализуйте эту функцию
 
@@ -405,7 +579,7 @@ def address_step(message, step):
             conn.commit()
 
             # Очищаем корзину пользователя
-            cursor.execute("UPDATE users SET basket = ? WHERE user_id = ?", (None, user_id))
+            cursor.execute("UPDATE users SET basket = ? WHERE user_id = ?", (json.dumps([]), user_id))
             conn.commit()
 
         # Отправляем пользователю примерное время ожидания

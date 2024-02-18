@@ -55,8 +55,9 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS products (
     name TEXT,
     description TEXT,
     price REAL,
-    rating REAL DEFAULT 4.0,  -- По умолчанию 4 звезды
-    total_ratings INTEGER DEFAULT 0  -- Общее количество оценок
+    rating REAL DEFAULT 4.0,
+    total_ratings INTEGER DEFAULT 0,
+    categories TEXT
 )''')
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS dish_comments (

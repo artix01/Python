@@ -1,22 +1,22 @@
-import telebot
-from telebot import types
 import sqlite3
-import json
-from datetime import datetime, timedelta
-import time
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from telebot.types import InputMediaPhoto
+
+
 
 # Подключение к базе данных SQLite
 conn = sqlite3.connect('bot_database.db')
 cursor = conn.cursor()
 
+
 # Создание таблицы пользователей
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    address TEXT,
-                    basket TEXT
+                    username TEXT    
+                )''')
+
+cursor.execute('''CREATE TABLE IF NOT EXISTS basket (
+                    user_id INTEGER PRIMARY KEY,
+                    basket TEXT,
+                    time TIMESTAMP
                 )''')
 
 # Создание таблицы для администраторов
@@ -28,11 +28,13 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS administrators (
 
 # Создание таблицы клиентов
 cursor.execute('''CREATE TABLE IF NOT EXISTS customers (
-                    user_id INTEGER PRIMARY KEY,
+                    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT,
                     email TEXT,
                     address TEXT,
-                    payment_method TEXT
+                    payment_method TEXT,
+                    telegram_id INTEGER,
+                    vk_id INTEGER
                 )''')
 
 # Создание таблицы заказов
@@ -64,7 +66,8 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS dish_comments (
     comment_id INTEGER PRIMARY KEY,
     user_id INTEGER,
     product_id INTEGER,
-    comment_text TEXT
+    comment_text TEXT,
+    rating REAL
 )''')
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS order_comments (
@@ -73,5 +76,17 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS order_comments (
     order_id INTEGER,
     comment_text TEXT
 )''')
+
+cursor.execute('''CREATE TABLE IF NOT EXISTS admin_users (
+    user_id INTEGER PRIMARY KEY,
+    admin_id INTEGER,
+    admin_level INTEGER
+)''')
+
+cursor.execute('''CREATE TABLE IF NOT EXISTS admin_panels (
+    admin_id INTEGER PRIMARY KEY,
+    panel_name TEXT
+)''')
+
 
 conn.commit()

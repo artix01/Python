@@ -19,12 +19,6 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS basket (
                     time TIMESTAMP
                 )''')
 
-# Создание таблицы для администраторов
-cursor.execute('''CREATE TABLE IF NOT EXISTS administrators (
-                    admin_id INTEGER PRIMARY KEY,
-                    user_id INTEGER,
-                    admin_level INTEGER     
-                )''')
 
 # Создание таблицы клиентов
 cursor.execute('''CREATE TABLE IF NOT EXISTS customers (
@@ -45,7 +39,7 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS orders (
                     total_price REAL NOT NULL,
                     order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     estimated_delivery_time INTEGER,
-                    status TEXT DEFAULT 'в ожидании',  
+                    status TEXT DEFAULT 'Ожидает подтверждения',  
                     basket TEXT,    
                     rated INTEGER DEFAULT 0,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
@@ -58,12 +52,12 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS products (
     description TEXT,
     price REAL,
     rating REAL DEFAULT 4.0,
-    total_ratings INTEGER DEFAULT 0,
+    total_ratings INTEGER DEFAULT 1,
     categories TEXT
 )''')
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS dish_comments (
-    comment_id INTEGER PRIMARY KEY,
+    comment_id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     product_id INTEGER,
     comment_text TEXT,
@@ -71,15 +65,15 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS dish_comments (
 )''')
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS order_comments (
-    comment_id INTEGER PRIMARY KEY,
+    comment_id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     order_id INTEGER,
     comment_text TEXT
 )''')
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS admin_users (
-    user_id INTEGER PRIMARY KEY,
-    admin_id INTEGER,
+    admin_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,   
     admin_level INTEGER
 )''')
 

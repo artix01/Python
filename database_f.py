@@ -4,12 +4,20 @@ import sqlite3
 conn = sqlite3.connect('bot_database.db', check_same_thread=False)
 cursor = conn.cursor()
 
-def select(table : str, columns : str, identifier: tuple[str, any]):
-    cursor.execute(f"SELECT {columns} FROM {table} WHERE {identifier[0]} = ?", (identifier[1],))
-    return cursor.fetchone()
+def select(table: str, columns: str, condition: str, params: tuple):
+    with conn:
+        cursor.execute(f"SELECT {columns} FROM {table} {condition}", params)
+        return cursor.fetchall()
 
 def insert(table: str, columns: str, data: tuple[any]):
-    query = f"INSERT INTO {table} ({columns}) VALUES (?)"
+    quastions = ""
+    for i in data:
+        if quastions == "":
+            quastions += "?"
+        else:
+            quastions += ", ?"
+    print(quastions)
+    query = f"INSERT INTO {table} ({columns}) VALUES ({quastions})"
 
     with conn:
         cursor.execute(query, data)
@@ -79,4 +87,18 @@ def update(table: str, column_data: tuple[str, any], identifier: tuple[str, any]
 
     with conn:
         cursor.execute(query, (column_data[1], identifier[1]))
+        conn.commit()
+
+def delete(table: str, identifier: tuple[str, any]):
+    """
+    Удаляет запись из указанной таблицы по заданному идентификатору.
+
+    Args:
+        table (str): Имя таблицы, из которой нужно удалить запись.
+        identifier (tuple): Кортеж, содержащий идентификатор для удаления записи (имя столбца и значение идентификатора).
+    """
+    query = f"DELETE FROM {table} WHERE {identifier[0]} = ?"
+
+    with conn:
+        cursor.execute(query, (identifier[1],))
         conn.commit()
